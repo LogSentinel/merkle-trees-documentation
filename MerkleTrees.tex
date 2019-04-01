@@ -1,0 +1,434 @@
+\documentclass{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{hyperref}
+
+\title{Merkle trees and I.T. clouds}
+\author{Stefan Genchev}
+\date{June 2018}
+
+\graphicspath{ {./images/} }
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+	This document includes basic information about the structure and function of Merkle trees as an efficient way to certify the integrity of data records. The generation of Merkle trees and Merkle audit and consistency proofs is described in detail. Furthermore, a resource-efficient method for using Merkle trees and a sample server implementation of a system log based on a Merkle tree are introduced.
+\end{abstract}
+
+\tableofcontents 
+
+\section{Merkle trees}
+	
+	\subsection{Definitions}
+		\begin{enumerate}
+			\item $ HASH(x) $ - denotes the operation of generating a cryptographic hash over the data $ x $ using a specific algorithm
+			\item $ x_{1} | x_{2} $ - denotes the concatenation of $ x_{1} $ and $ x_{2} $
+			\item $ D_{n} $ - denotes a list of n entries (e.g. $ D_{3} $ is a list of three entries)
+			\item $ d(x) $ - denotes the (x - 1)-th element of a list $ D_{n} $ of n entries (e.g. $ d(3) from D_{5} $ denotes the fourth element from a list with five entries)
+			\item $ D_{x, n}^{y} $
+		\end{enumerate}
+	
+	\subsection{Basics}
+	
+	\begin{figure}[H]
+		\caption{A sample Merkle tree with eleven entries}
+		\includegraphics[width=\textwidth]{images/"Merkle tree with node layers".png}
+	\end{figure}
+	
+	A Merkle tree consists of leaves, nodes and a tree head (hash). The input to the Merkle tree is an ordered list of binary data entries (E 1-11). \\
+	
+	These entries are hashed in order to form the Merkle tree leaves.
+	
+	\[HASH(E1)=L1, HASH(E2)=L2, ..., HASH(E11)=L11\]
+	
+	The leaves (the binary data entries that were hashed in the previous step) are now hashed pairwise. Each hash forms a Merkle tree node. Together, all hashes of the Merkle tree leaves form the first layer of Merkle tree nodes. If the number of leaves is odd, the last leaf is not hashed for a second time, as it does not have a partner leaf to be hashed pairwise with.
+	
+	\[HASH(E1|E2)=A, HASH(E2|E3)=B, ..., HASH(E9|10)=E\]
+	
+	The Merkle tree nodes from the (first) layer - generated in the previous step - are once again to be hashed pairwise, in this way forming new hashes that then form a new (second) layer of nodes. This cycle continues until only two nodes remain. By hashing them, one receives the Merkle Tree Hash (MTH) of the given tree. The last nodes of odd-sized layers of nodes are hashed cross-layer. \\
+	
+	\subsection{Important properties of Merkle trees}
+	Merkle trees provide a fast and efficient way to prove that:
+	\begin{enumerate}
+		\item all data entries have been consistently appended to the database.
+		\item a particular data entry has been appended to the log.
+	\end{enumerate}
+		
+		\subsubsection{Parameter k}
+		The parameter $ k $ is the largest power of two smaller than n (i.e.,$  k \textless n \leq 2k $). In the context of Merkle trees, by calculating k, one receives the largest number of leaves that can be used to build a Merkle tree with entirely even-sized node layers in an original, bigger Merkle tree with odd- or even-sized node layers.
+		
+		\subsubsection{Generating a Merkle Tree Hash}
+		The input to the Merkle Tree Hash (MTH) generation method \textit{GenerateMTH} is an ordered list of data entries  \textit{$ D_{n} $} of size $ n $. The output is a single hash value. \\
+		
+		\textbf{GenerateMTH(\textit{$ D_{n} $} d)}
+		\begin{enumerate}
+			\item Define $ n $ as the size of $ d $
+			\item The MTH of an empty list (n = 0) is the hash of an empty string. \[Return: HASH().\]
+			\item The MTH of a list with one entry (n = 1) is defined as a leaf hash. \[Return: HASH(0x00 | d(0)).\]
+			\item The MTH of a list with more than one entries (n \textgreater 1) is generated as follows:
+			\begin{enumerate}
+				\item Calculate the parameter $ k $ for $ n $
+				\item Create a new list of data entries $ D_{0, k}^{k} = [ d(0), d(1), d(2), ..., d(k - 1) ] $ of size $ k $
+				\item Create a new list of data entries $ D_{k, n - k}^{n} =  [d(k), d(k+1), d(k+2), d(n - 1) ]$ of size $ n - k $
+				\item Using a recursion, the MTH is calculated as follows: \[Return: HASH(0x01 | GenerateMTH( D_{0, k}^{k}) | GenerateMTH(D_{k, n - k}^{n}))\] 
+			\end{enumerate}
+		\end{enumerate}
+		\subsubsection{Explaining the recursion during the MTH generation}
+		
+		In a recursion, the abovedescribed method for generating Merkle Tree Hashes (MTH) splits the original Merkle tree into smaller ones and calculates their MTHs. This process of generating smaller and smaller trees continues until the tree leaves are reached. The resulting MTHs of the subtrees are sent back on the chain in the opposite direction of the tree separation in order to form the MTH of the original tree. 
+		
+		First, the parameter k must be calculated based on n. Each tree, beginning with the original one, is then split in two new trees with leaves from 1 to k and, respectively, leaves from k to n. The same operation of recalculating k and splitting the tree in two, smaller trees is performed for these two newly generated trees and then for the resulting from this operation two trees and so on. 
+		
+		When the leaves of the original tree are reached, their leaf hash is calculated. The hash of the concatenated leaf hashes of two entries form the MTH of the smallest trees. The hash of the concatenated MTHs of two related trees, split by k, form the MTH of their parent tree. This calculation of the MTHs from smaller trees to bigger trees continues until only two subtrees exist. The hash of their concatenated MTHs form the MTH of the original tree.
+
+		The following figures illustrate this behavior. The orange boxes represent the trees with leaves from 1 to k. The red boxes represent the trees with leaves from k to n.
+		
+		\begin{figure}[H]
+			\centering
+			\caption{This is the original Merkle tree. Its MTH (\textbf{J}) is calculated by concatenating the MTHs of the two subtrees (I and H) with leaves from $ 1 $ to $ k=8 $ [$ L1 \rightarrow L8 $] and with leaves from $ k=8 $ to $ n=11 $ [$ L8 \rightarrow L11 $].}
+			\includegraphics[width=\textwidth]{images/"Building Merkle trees n11".png}
+		\end{figure}
+		
+		\begin{figure}[H]
+			\centering
+			\caption{This is the first subtree of the original tree $ n=11 $. Its MTH (\textbf{I}) is calculated by concatenating the MTHs of its two subtrees (F and G) with leaves from $ 1 $ to $ k=4 $ [$ L1 \rightarrow L4 $] and with leaves from $ k=4 $ to $ n=8 $ [$ L5 \rightarrow L8 $].  This subtree's MTH is used to calculate its parent tree's MTH (J = \textbf{I} + H).}
+			\includegraphics[height=6cm]{images/"Building Merkle trees n8".png}
+		\end{figure}
+	
+
+		\begin{figure}[H]
+			\centering
+			\caption{This is the other subtree of the original tree $ n=11 $. Its MTH (\textbf{H}) is calculated by concatenating the MTH of its one subtree (E) with leaves from $ 1 $ to $ k=2 $ [$ L9 \rightarrow L10 $] and with the leaf hash of 3 [L11]. This subtree's MTH is used to calculate its parent tree's MTH (J = I + \textbf{H}).}
+			\includegraphics[height=4.5cm]{images/"Building Merkle trees n3".png}
+		\end{figure}
+		
+		\begin{figure}[H]
+			\centering
+			\caption{This is the first subtree of the previously generated subtree $ n=8 $. Its MTH (\textbf{F}) is calculated by concatenating the MTHs of its two subtrees (A and B) with leaves from $ 1 $ to $ k=2 $ [$ L1 \rightarrow L2 $] and with leaves from $ k=2 $ to $ n=4 $ [$ L3 \rightarrow L4 $]. This subtree's MTH is used to calculate its parent tree's MTH (I = \textbf{F} + G).}
+			\includegraphics[height=4.5cm]{images/"Building Merkle trees n4".png}
+		\end{figure}
+	
+		\begin{figure}[H]
+			\centering
+			\caption{This is the first subtree of the previously generated subtree $ n=4 $. Its MTH (\textbf{A}) is calculated by concatenating the leaf hashes of its two leaves L1 and L2 and used to calculate its parent tree's MTH (F = \textbf{A} + B).}
+			\includegraphics[height=2.5cm]{images/"Building Merkle trees n2".png}
+		\end{figure}
+
+	
+	\subsection{Verifying proper inclusion}
+	
+	\subsection{Verifying consistency}
+
+\section{Merkle tree usage}
+
+	\subsection{Required database tables}
+	
+	\subsubsection{PendingEntries}
+	
+	The \textit{PendingEntries} table stores the data of log entries that were processed by the system but were not merged with the current Merkle tree. The \textit{Id} of the record is a preassigned Merkle tree leaf index and is calculated by getting the size of the current Merkle tree plus the number of pending entries plus one. The structured data of the log entry is stored in the \textit{Data} field of the table. A time stamp is added for information purposes.
+	
+	\begin{table}[H]
+		\centering
+		\caption{Database table \textit{PendingEntries}}
+		\label{pendingEntriesDbTable1}
+		\begin{tabular}{|c|c|c|} \hline
+			\textbf{Id}	& \textbf{Data}  & \textbf{TimeStamp} \\ \hline
+			 INTEGER & BLOB & INTEGER \\ \hline
+			 NOT NULL & NOT NULL & NOT NULL\\
+			 UNIQUE && \\
+			 PRIMARY KEY && \\ \hline
+		\end{tabular}
+	\end{table}
+
+	\subsubsection{Entries}
+	
+	The \textit{Entries} table stores all Merkle tree leaves that reside in the current Merkle tree and that were used to calculate the latest Merkle Tree Hash (MTH). The \textit{Id}, \textit{Data} and \textit{TimeStamp} fields are identical to those of the \textit{PendingEntries} table. They are simply copied to this table when a new Merkle tree is being generated. The additional field \textit{TreeSize} denotes the size of the resulting Merkle tree in order to make a connection between a historical Merkle Tree Head of a Merkle tree of size \textit{TreeSize} and a particular Merkle tree leaf. This table has to be append-only.
+
+	\begin{table}[H]
+		\centering
+		\caption{Database table \textit{Entries}}
+		\label{entriesDbTable1}
+		\begin{tabular}{|c|c|c|c|} \hline
+			\textbf{Id}	& \textbf{Data}  & \textbf{TimeStamp} & \textbf{TreeSize} \\ \hline
+			INTEGER & BLOB & INTEGER & INTEGER \\  \hline
+			NOT NULL & NOT NULL & NOT NULL & NOT NULL \\
+			UNIQUE &&& \\
+			PRIMARY KEY &&& \\ \hline
+		\end{tabular}
+	\end{table}
+
+
+	\subsubsection{TreeHeads}
+	
+	The \textit{TreeHeads} table stores all historical Merkle Tree Heads that were generated during the operation of the system. It also includes the latest Merkle Tree Head - this is the Merkle Tree Head of the greatest \textit{TreeSize}. The Merkle Tree Head (Hash) is stored in the \textit{TreeHash} field. The \textit{Id} field is not important and can be set to auto-increment. The signature over the corresponding \textit{TreeHash} is stored in the \textit{Signature} field. \textit{TreeSize} denotes the size of the Merkle tree during the generation of the corresponding Merkle Tree Head, and \textit{TimeStamp} - the time of the generation of the corresponding Merkle Tree Head. This table has to be append-only. 
+	
+	\begin{table}[H]
+		\centering
+		\caption{Database table \textit{TreeHeads}}
+		\label{treeHeadsDbTable1}
+		\begin{tabular}{|c|c|c|c|c|} \hline
+			\textbf{Id}	& \textbf{TreeHash}  & \textbf{TimeStamp} & \textbf{TreeSize} & \textbf{Signature} \\ \hline
+			INTEGER & BLOB & INTEGER & INTEGER & BLOB \\ \hline
+			NOT NULL & NOT NULL & NOT NULL & NOT NULL & NOT NULL \\
+			UNIQUE & & & & \\
+			PRIMARY KEY & & & & \\ \hline
+		\end{tabular}
+	\end{table}
+
+	\subsubsection{CachedEntries}
+	
+	The \textit{CachedEntries} table stores the hash values of important nodes in the current Merkle Tree. The hash of an important node is stored in the \textit{Hash} field of the table. The \textit{Start} field denotes the leaf index of the first Merkle tree leaf in the sequence, used to generate the particular node, and the \textit{Stop} field - the leaf index of the last Merkle tree leaf in the sequence. The \textit{Id} field is not important and can be set to auto-increment. Please refer to Section \ref{saving-important-nodes} for more information on how important nodes are selected. As some important nodes change when a new Merkle tree is generated, this table has to be updated regularly.
+
+	\begin{table}[H]
+		\centering
+		\caption{Database table \textit{CachedNodes}}
+		\label{cachedNodesDbTable1}
+		\begin{tabular}{|c|c|c|c|} \hline
+			\textbf{Id}	& \textbf{Start}  & \textbf{Stop} & \textbf{Hash} \\ \hline
+			INTEGER & INTEGER & INTEGER & BLOB \\  \hline
+			NOT NULL & NOT NULL & NOT NULL & NOT NULL \\
+			UNIQUE &&& \\
+			PRIMARY KEY &&& \\ \hline
+		\end{tabular}
+	\end{table}
+
+    \subsection{Interactions}
+    
+    \subsubsection{Log entry submission and Merkle tree generation}
+    An application submits a log entry through the official LogSentinel API endpoints. The log entry data is then structured (encoded) in a special way, so that two entries with the same data but of different attribute order result in the same structured data. The ASN.1 or TLS encoding schemes could be used for this purpose. Basic encoding schemes such as key-value concatenation are acceptable as well, as long as they have the desired, above-mentioned property. \underline{The hash} of the structured (encoded) log entry data is then saved in the \textit{PendingEntries} table in a remote database.  The \textit{Id} of the record is a preassigned Merkle tree leaf index and is calculated by getting the size of the current Merkle tree plus the number of pending entries plus one. Please note that the number of pending entries increases with every record inserted.
+    
+	Every $x$ hours a new Merkle tree is built. The maximum time needed to merge pending entries with the current Merkle tree is called MMD or Maximum Merge Delay. A reasonable MMD is a MMD of 24 hours. 
+	
+	When a new Merkle tree has to be built, all entries in the \textit{PendingEntries} table are transfered to the \textit{Entries} table. The \textit{Id}, \textit{Data} and \textit{TimeStamp} properties of each new record in the \textit{Entries} table are copied from the corresponding record from the \textit{PendingEntries} table without modification. The \textit{TreeSize} property in the new records is calculated by getting the size of the current Merkle tree plus the size of the \textit{PendingEntries} table. When the transfer of all entries in the \textit{Entries} table has been completed, all records in the \textit{PendingEntries} table are to be deleted. 
+	
+	With all entries in the \textit{Entries} table, the program generates a list of all leaves that are to be included in the new Merkle tree. This list should only include the leaf index of the corresponding leaves. Practically, this list has to contain all indexes from 1 to $ n $, where $ n $ is the size of the \textit{Entries} table. Then, a function is called that generates a Merkle Tree Head given a list of leaf indexes, generated in the previous step. 
+	
+	The MTH generation function returns a hash that has to be signed by the server and inserted in the \textit{TreeHash} field of the \textit{TreeHeads} table. This database record also includes the time of generation (\textit{TimeStamp}) and the size of the current Merkle Tree (\textit{TreeSize}). The record incorporates the calculated cryptographic signature as well. 
+	
+	\subsubsection{Merkle inclusion proof generation}
+	If a client wants to verify whether a particular log entry resides in the current Merkle tree, the system can produce an inclusion proof that is used for verification. For this purpose, the index of the leaf to be verified for inclusion is needed. The client can directly specify the leaf index or perform a search:
+	
+	\begin{enumerate}
+		\item raw log entry data is submitted and the system generates the corresponding structured data hash. The systems performs a search in the database based on it. A leaf index is returned if a single entry is found. If there are more than one tree leaves of the same content, a list of indexes is returned.
+		\item the log entry data is structured and hashed client-side and the resulting hash is submitted. The systems performs a search in the database based on it. A leaf index is returned if a single entry is found. If there are more than one tree leaves of the same content, a list of indexes is returned.
+	\end{enumerate}
+
+	The program generates a list of all leaves that are included in the current Merkle tree. This list should only include the leaf index of the corresponding leaves. Given this list and the leaf index, a function is then called that returns a list of intermediate nodes - the inclusion proof. By using them, the client can reconstruct the current Merkle tree and calculate the Merkle Tree Hash. It can then be compared to the one, advertised by the system. 
+	
+	\subsubsection{Merkle consistency proof generation}
+	If a client wants to verify the consistency between two advertised Merkle Tree Hashes, i.e. verify that any two versions of a log are consistent, the system can produce a consistency proof that is used for verification. For this purpose, the tree size of the previous (\textit{tree\_size1}) and the tree size of the newer tree (\textit{tree\_size2}) are needed (0 \textless \textit{tree\_size1} \textless  \textit{tree\_size2}). If only one tree size is specified, the system assumes that the consistency between the specified Merkle tree and the current Merkle tree should be returned.
+	
+	The program generates a list of leaves of size \textit{tree\_size2}. This list should only include the leaf index of the corresponding leaves. Given this list and \textit{tree\_size1}, a function is then called that returns a list of nodes - the consistency proof. By using them, the client can reconstruct the current Merkle tree (and the old one) and calculate the Merkle Tree Hash. It can then be compared to the one, advertised by the system. Additionally, the Merkle Tree Hash of the reconstructed old Merkle tree can be compared to the externally fetched one. 
+	
+	\subsection{API endpoints}
+	
+		\subsubsection{Retrieve general information}
+		
+		\textbf{GET} https://api.logsentinel.com/api/merkle/info \\
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item hashAlgorithm: The OID of the hash algorithm that is used by the system.
+			\item signatureAlgorithm: The OID of the signature algorithm that is used by the system.
+			\item publicKey: The public key that corresponds to the cryptographic key pair used by the system to sign Merkle Tree Hashes (MTHs).
+		\end{enumerate}
+	
+		\subsubsection{Retrieve the current Merkle Tree Hash (MTH)}
+	
+		\textbf{GET} https://api.logsentinel.com/api/merkle/sth \\
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item treeSize: The size of the current Merkle tree.
+			\item mth: The Merkle Tree Hash (MTH) of the current Merkle tree.
+			\item signature: The cryptographic signature over the current Merkle Tree Hash (MTH).
+			\item timestamp: The time of generation of the current Merkle Tree Hash (MTH).
+		\end{enumerate}
+		
+		\subsubsection{Submit a log entry for inclusion in the Merkle tree}
+		
+		\textbf{POST} https://api.logsentinel.com/api/merkle/submit \\
+		
+		\noindent Authentication: basic \\
+		
+		\noindent Inputs:
+		\begin{enumerate}
+			\item applicationId: Application ID, identifying a target application (obtained from the API credentials page). Required.
+			\item entry: Base64-encoded entry of any format about the event that is to be stored in the Merkle tree. Required.
+		\end{enumerate}
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item leafIndex: The preassigned leaf index of the submitted entry.
+		\end{enumerate}
+	
+		\noindent Error codes:
+		\begin{table}[H]
+			\centering
+			\caption{Error codes}
+			\label{merkle-submit-error-codes}
+			\begin{tabular}{|l|l|}
+				\hline
+				\multicolumn{1}{|c|}{Code} & 	\multicolumn{1}{c|}{Meaning} \\ \hline
+				400 & One of the required inputs is missing. \\ \hline
+				401 & The specified \textit{applicationId} was not found or the provided \\
+				& authentication credentials were wrong. \\ \hline
+				500 & The system cannot include this entry in the Merkle tree for unknown \\ & reasons. \\ \hline
+			\end{tabular}
+		\end{table}
+	
+		\subsubsection{Get an inclusion proof for a log entry}
+	
+		\textbf{GET} https://api.logsentinel.com/api/merkle/inclusion \\
+		
+		\noindent Authentication: basic \\
+		
+		\noindent Inputs:
+		\begin{enumerate}
+			\item applicationId: Application ID, identifying a target application (obtained from the API credentials page). Required.
+			\item leafIndex: Leaf index of the entry for which an inclusion proof has to be returned. Can be found using the search option of the API. Required.
+		\end{enumerate}
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item inclusion: A list of Base64-encoded nodes or leaves that prove the inclusion of the specified entry in the current Merkle tree.
+			\item sth: The current Merkle Signed Tree Head (STH).
+		\end{enumerate}
+		
+		\noindent Error codes:
+		\begin{table}[H]
+			\centering
+			\caption{Error codes}
+			\label{merkle-inclusion-error-codes}
+			\begin{tabular}{|l|l|}
+				\hline
+				\multicolumn{1}{|c|}{Code} & 	\multicolumn{1}{c|}{Meaning} \\ \hline
+				400 & One of the required inputs is missing. \\ \hline
+				401 & The specified \textit{applicationId} was not found or the provided \\
+				& authentication credentials were wrong. \\ \hline
+				404 & The specified \textit{leafIndex} was not found. \\ \hline
+				500 & The system cannot provide the inclusion proof for this entry \\ & in the Merkle tree for unknown  reasons. \\ \hline
+			\end{tabular}
+		\end{table}
+	
+		\subsubsection{Retrieve the consistency proof for two versions of the Merkle tree}
+		
+		\textbf{GET} https://api.logsentinel.com/api/merkle/consistency \\
+		
+		\noindent Authentication: basic \\
+		
+		\noindent Inputs:
+		\begin{enumerate}
+			\item applicationId: Application ID, identifying a target application (obtained from the API credentials page). Required.
+			\item firstTreeSize: Size of the older tree. Required.
+			\item secondTreeSize: Size of the newer tree. Optional. If not specified, the system assumes that a consistency proof between the older tree and the current tree has to be returned. 
+		\end{enumerate}
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item consistency: A list of Base64-encoded nodes that prove the consistency between the two specified versions of the Merkle tree.
+		\end{enumerate}
+		
+		\noindent Error codes:
+		\begin{table}[H]
+			\centering
+			\caption{Error codes}
+			\label{merkle-consistency-error-codes}
+			\begin{tabular}{|l|l|}
+				\hline
+				\multicolumn{1}{|c|}{Code} & 	\multicolumn{1}{c|}{Meaning} \\ \hline
+				400 & One of the required inputs is missing or \textit{firstTreeSize} is \\
+				& greater than \textit{secondTreeSize}. \\ \hline
+				401 & The specified \textit{applicationId} was not found or the provided \\
+				& authentication credentials were wrong. \\ \hline
+				404 & The specified tree(s) was/were not found. \\ \hline
+				500 & The system cannot provide the consistency proof for the \\ & specified versions of the Merkle tree for unknown  reasons. \\ \hline
+			\end{tabular}
+		\end{table}
+	
+		\subsubsection{Retrieve leaves from database}
+		
+		\textbf{GET} https://api.logsentinel.com/api/merkle/get \\
+		
+		\noindent Authentication: basic \\
+		
+		\noindent Inputs:
+		\begin{enumerate}
+			\item applicationId: Application ID, identifying a target application (obtained from the API credentials page). Required.
+			\item start: 0-based index of first leaf to retrieve. Required.
+			\item stop: 0-based index of the last leaf to retrieve. Optional. If not specified, the system assumes that all leaves from \textit{start} to \textit{size} of the current Merkle tree have to be returned. 
+		\end{enumerate}
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item leaves: A list of Base64-encoded leaves with leaf indexes between \textit{start} and \textit{stop}.
+		\end{enumerate}
+		
+		\noindent Error codes:
+		\begin{table}[H]
+			\centering
+			\caption{Error codes}
+			\label{merkle-get-error-codes}
+			\begin{tabular}{|l|l|}
+				\hline
+				\multicolumn{1}{|c|}{Code} & 	\multicolumn{1}{c|}{Meaning} \\ \hline
+				400 & One of the required inputs is missing or \textit{start} is \\
+				& greater than \textit{stop}. \\ \hline
+				401 & The specified \textit{applicationId} was not found or the provided \\
+				& authentication credentials were wrong. \\ \hline
+				500 & The system cannot provide the requested leaves \\ & for unknown  reasons. \\ \hline
+			\end{tabular}
+		\end{table}
+	
+		\subsubsection{Search for a specific leaf in the database}
+		
+		\textbf{GET} https://api.logsentinel.com/api/merkle/search \\
+		
+		\noindent Authentication: basic \\
+		
+		\noindent Inputs:
+		\begin{enumerate}
+			\item applicationId: Application ID, identifying a target application (obtained from the API credentials page). Required.
+			\item hash: The hash of the log entry, for which a leaf index has to be returned. Required.
+		\end{enumerate}
+		
+		\noindent Outputs:
+		\begin{enumerate}
+			\item indexes: A list of indexes of leafs that match the search criteria. If only one entry was found, matching the search criteria, the list contains only one leaf index.
+		\end{enumerate}
+		
+		\noindent Error codes:
+		\begin{table}[H]
+			\centering
+			\caption{Error codes}
+			\label{merkle-search-error-codes}
+			\begin{tabular}{|l|l|}
+				\hline
+				\multicolumn{1}{|c|}{Code} & 	\multicolumn{1}{c|}{Meaning} \\ \hline
+				400 & One of the required inputs is missing. \\ \hline
+				401 & The specified \textit{applicationId} was not found or the provided \\
+				& authentication credentials were wrong. \\ \hline
+				404 & No leaves were found matching the specified hash. \\ \hline
+				500 & The system cannot provide the requested leaf indexes \\ & for unknown  reasons. \\ \hline
+			\end{tabular}
+		\end{table}
+	 
+    
+\section{Resource-efficient storage and generation of Merkle trees}
+
+	\subsection{Saving important nodes in the database}
+	 \label{saving-important-nodes}
+	 \cite{CT:2} \cite{cryptoeprint:2016:683}
+	 \cite{ct:org}
+
+\bibliography{References}{}
+\bibliographystyle{apalike}
+\end{document}
